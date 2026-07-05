@@ -21,10 +21,27 @@ SOURCE_DIR = DATA_DIR / "source_faces"
 TARGET_DIR = DATA_DIR / "targets"
 OUTPUT_DIR = DATA_DIR / "outputs"
 LOG_DIR = DATA_DIR / "logs"
-PROJECTS_FILE = DATA_DIR / "projects.json"
+PROJECT_DIR = DATA_DIR / "projects"
+MODEL_DIR = Path(os.environ.get("MODEL_DIR", "/workspace/models"))
 
-for folder in (SOURCE_DIR, TARGET_DIR, OUTPUT_DIR, LOG_DIR):
+for folder in (SOURCE_DIR, TARGET_DIR, OUTPUT_DIR, LOG_DIR, PROJECT_DIR, MODEL_DIR):
     folder.mkdir(parents=True, exist_ok=True)
+
+APP_CSS = """
+.gradio-container { max-width: 1220px !important; }
+.fd-hero {
+  border-radius: 28px; padding: 30px; margin-bottom: 18px;
+  background: linear-gradient(135deg, rgba(56,120,255,.18), rgba(176,83,255,.16));
+  border: 1px solid rgba(255,255,255,.14);
+}
+.fd-hero h1 { font-size: 42px; margin: 0 0 8px 0; letter-spacing: -1px; }
+.fd-hero p { font-size: 17px; opacity: .88; margin: 0; }
+.fd-card { border-radius: 22px; padding: 18px; border: 1px solid rgba(255,255,255,.12); }
+.fd-step { font-weight: 700; font-size: 18px; margin-bottom: 8px; }
+.fd-big button { min-height: 54px; font-size: 18px !important; font-weight: 700 !important; border-radius: 16px !important; }
+.fd-pill { display:inline-block; padding:6px 10px; border-radius:999px; background:rgba(120,120,120,.14); margin:3px; }
+.fd-footer { opacity:.75; font-size:13px; margin-top:16px; }
+"""
 
 
 def _safe_copy(upload_path: str, folder: Path, prefix: str, allowed: set[str] | None = None) -> Path:
@@ -41,45 +58,36 @@ def _safe_copy(upload_path: str, folder: Path, prefix: str, allowed: set[str] | 
 
 
 def _output_path(target: Path) -> Path:
-    suffix = target.suffix.lower()
-    if suffix in IMAGE_EXTENSIONS:
+    if target.suffix.lower() in IMAGE_EXTENSIONS:
         return OUTPUT_DIR / f"facedeploy_{uuid.uuid4().hex[:10]}.png"
     return OUTPUT_DIR / f"facedeploy_{uuid.uuid4().hex[:10]}.mp4"
 
 
-def _read_projects() -> list[dict[str, str]]:
-    if not PROJECTS_FILE.exists():
-        return []
-    try:
-        return json.loads(PROJECTS_FILE.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return []
+def _project_note(source: Path, target: Path, output: Path, preset_name: str, ok: bool, elapsed: float) -> None:
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    project = PROJECT_DIR / f"{output.stem}.txt"
+    project.write_text(
+        "\n".join([
+            f"created={stamp}",
+            f"status={'done' if ok else 'failed'}",
+            f"preset={preset_name}",
+            f"source={source}",
+            f"target={target}",
+            f"output={output}",
+            f"seconds={elapsed:.1f}",
+        ]),
+        encoding="utf-8",
+    )
 
 
-def _save_project(record: dict[str, str]) -> None:
-    projects = _read_projects()
-    projects.insert(0, record)
-    PROJECTS_FILE.write_text(json.dumps(projects[:50], indent=2), encoding="utf-8")
-
-
-def _projects_table() -> list[list[str]]:
-    rows: list[list[str]] = []
-    for item in _read_projects():
-        rows.append([
-            item.get("created", ""),
-            item.get("kind", ""),
-            item.get("preset", ""),
-            item.get("status", ""),
-            item.get("output", ""),
-        ])
-    return rows
-
-
-def _run_facefusion(source: Path, target: Path, output: Path, preset_name: str) -> tuple[bool, str]:
+def _run_facefusion(source: Path, target: Path, output: Path, preset_name: str, enhance: bool = True) -> tuple[bool, str]:
     preset = PRESETS[preset_name]
     log_path = LOG_DIR / f"run_{output.stem}.log"
+    args = list(preset["args"])
+    if not enhance:
+        args = [item for item in args if item != "face_enhancer"]
 
-    base_cmd = [
+    cmd = [
         "python3",
         str(FACEFUSION_DIR / "facefusion.py"),
         "headless-run",
@@ -89,8 +97,7 @@ def _run_facefusion(source: Path, target: Path, output: Path, preset_name: str) 
         str(target),
         "--output-path",
         str(output),
-    ]
-    cmd = base_cmd + list(preset["args"])
+    ] + args
 
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
@@ -100,164 +107,170 @@ def _run_facefusion(source: Path, target: Path, output: Path, preset_name: str) 
         log.write("Command:\n")
         log.write(" ".join(shlex.quote(part) for part in cmd) + "\n\n")
         log.flush()
-        process = subprocess.run(
-            cmd,
-            cwd=str(FACEFUSION_DIR),
-            env=env,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
+        process = subprocess.run(cmd, cwd=str(FACEFUSION_DIR), env=env, stdout=log, stderr=subprocess.STDOUT, text=True)
 
     elapsed = time.time() - started
-    log_text = log_path.read_text(encoding="utf-8", errors="replace")[-5000:]
+    log_text = log_path.read_text(encoding="utf-8", errors="replace")[-7000:]
     ok = process.returncode == 0 and output.exists() and output.stat().st_size > 0
-    status = "Finished" if ok else "Needs attention"
-    summary = f"{status} in {elapsed:.1f}s\n\nLog tail:\n{log_text}"
+    _project_note(source, target, output, preset_name, ok, elapsed)
+    status = "✅ Finished" if ok else "❌ Failed"
+    summary = f"{status} in {elapsed:.1f}s\n\nSaved to: {output}\nLog: {log_path}\n\n{log_text}"
     return ok, summary
 
 
-def _run_swap(source_upload, target_upload, preset_name: str, kind: str, allowed_targets: set[str]):
+def run_swap(source_upload, target_upload, preset_name: str, enhance: bool):
     if source_upload is None or target_upload is None:
-        return None, "Choose a source face and a target file.", _projects_table()
-
+        return None, "Upload both a source face image and a target image/video."
     try:
         source = _safe_copy(source_upload, SOURCE_DIR, "source", IMAGE_EXTENSIONS)
         target = _safe_copy(target_upload, TARGET_DIR, "target", allowed_targets)
         output = _output_path(target)
-        ok, summary = _run_facefusion(source, target, output, preset_name)
-        _save_project({
-            "created": datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "kind": kind,
-            "preset": preset_name,
-            "status": "done" if ok else "failed",
-            "source": str(source),
-            "target": str(target),
-            "output": str(output) if ok else "",
-        })
-        if ok:
-            return str(output), summary, _projects_table()
-        return None, summary, _projects_table()
-    except Exception as exc:  # noqa: BLE001 - beginner-friendly UI error
-        return None, f"Error: {exc}", _projects_table()
+        ok, summary = _run_facefusion(source, target, output, preset_name, enhance)
+        return (str(output) if ok else None), summary
+    except Exception as exc:
+        return None, f"Error: {exc}"
 
 
-def run_image(source_upload, target_upload, preset_name: str):
-    return _run_swap(source_upload, target_upload, preset_name, "image", IMAGE_EXTENSIONS)
+def run_image(source_upload, target_upload, preset_name: str, enhance: bool):
+    if target_upload and Path(target_upload).suffix.lower() not in IMAGE_EXTENSIONS:
+        return None, "This tile is for images only. Use the Video tab for videos."
+    return run_swap(source_upload, target_upload, preset_name, enhance)
 
 
-def run_video(source_upload, target_upload, preset_name: str):
-    return _run_swap(source_upload, target_upload, preset_name, "video", VIDEO_EXTENSIONS)
+def run_video(source_upload, target_upload, preset_name: str, enhance: bool):
+    if target_upload and Path(target_upload).suffix.lower() not in VIDEO_EXTENSIONS:
+        return None, "This tile is for videos only. Use the Image tab for images."
+    return run_swap(source_upload, target_upload, preset_name, enhance)
+
+
+def list_projects() -> str:
+    outputs = sorted(OUTPUT_DIR.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)[:30]
+    if not outputs:
+        return "No projects yet. Run your first image or video swap."
+    rows = []
+    for path in outputs:
+        size_mb = path.stat().st_size / (1024 * 1024)
+        mtime = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+        rows.append(f"- **{path.name}** · {size_mb:.1f} MB · {mtime} · `{path}`")
+    return "\n".join(rows)
+
+
+def _check_command(label: str, cmd: list[str], first_line: bool = False, allow_fail: bool = False) -> str:
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        text = (result.stdout or result.stderr or "").strip()
+        if first_line:
+            text = text.splitlines()[0] if text else "OK"
+        icon = "✅" if result.returncode == 0 else "⚠️"
+        return f"{icon} **{label}:** {text}"
+    except Exception as exc:
+        icon = "⚠️" if allow_fail else "❌"
+        return f"{icon} **{label}:** {exc}"
 
 
 def system_check() -> str:
-    checks = []
-    checks.append("✅ Upload folders ready" if DATA_DIR.exists() else "❌ Data folder missing")
-    checks.append("✅ FaceFusion folder found" if FACEFUSION_DIR.exists() else "❌ FaceFusion folder missing")
-    try:
-        result = subprocess.run(["nvidia-smi"], capture_output=True, text=True, timeout=8)
-        checks.append("✅ NVIDIA GPU visible" if result.returncode == 0 else "⚠️ NVIDIA GPU not visible")
-    except Exception:
-        checks.append("⚠️ NVIDIA GPU check unavailable")
-    checks.append(f"📁 Outputs: {OUTPUT_DIR}")
-    checks.append(f"📁 Logs: {LOG_DIR}")
-    return "\n".join(checks)
-
-
-def model_status() -> str:
-    model_root = Path("/workspace/models")
-    lines = ["Model storage", f"📁 {model_root}"]
-    lines.append("✅ Model folder exists" if model_root.exists() else "⚠️ Model folder not found yet")
-    lines.append("Use FaceFusion or ComfyUI once to let required models cache automatically.")
-    lines.append("For RunPod later, mount persistent storage at /workspace so models are reused.")
+    lines = ["### Local system check"]
+    lines.append(_check_command("Python", ["python3", "--version"]))
+    lines.append(_check_command("FFmpeg", ["ffmpeg", "-version"], first_line=True))
+    lines.append(_check_command("NVIDIA GPU", ["nvidia-smi"], first_line=True, allow_fail=True))
+    lines.append(f"Models folder: `{MODEL_DIR}`")
+    lines.append(f"Outputs folder: `{OUTPUT_DIR}`")
     return "\n".join(lines)
 
 
-def refresh_projects():
-    return _projects_table()
+def repair_folders() -> str:
+    for folder in (SOURCE_DIR, TARGET_DIR, OUTPUT_DIR, LOG_DIR, PROJECT_DIR, MODEL_DIR):
+        folder.mkdir(parents=True, exist_ok=True)
+    return "✅ Folders checked and repaired."
 
 
-CSS = """
-#hero {border-radius: 24px; padding: 28px; background: linear-gradient(135deg, #111827, #312e81); color: white;}
-#hero h1, #hero p {color: white;}
-.workflow-card {border: 1px solid #e5e7eb; border-radius: 18px; padding: 18px; background: #ffffff;}
-.big-button button {font-size: 18px !important; padding: 14px 18px !important; border-radius: 14px !important;}
-.status-box textarea {font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;}
+def preset_cards() -> str:
+    return """
+<span class="fd-pill">Fast: quick drafts</span>
+<span class="fd-pill">Quality: best normal default</span>
+<span class="fd-pill">Hollywood: slower final render</span>
 """
 
 
 def build_ui() -> gr.Blocks:
-    with gr.Blocks(title="FaceDeploy Studio", css=CSS, theme=gr.themes.Soft()) as demo:
-        gr.Markdown(
-            """
-<div id="hero">
-<h1>FaceDeploy Studio</h1>
-<p>No prompts. No cameras. Pick a workflow, upload files, press Start, download the result.</p>
+    with gr.Blocks(title="FaceDeploy Local", css=APP_CSS, theme=gr.themes.Soft()) as demo:
+        gr.HTML("""
+<div class="fd-hero">
+  <h1>FaceDeploy Local</h1>
+  <p>Visual upload workflow. No cameras. No prompts. No node graphs. Upload files, choose quality, click Start.</p>
 </div>
-"""
-        )
-        gr.Markdown("Use only faces and footage you have permission to edit.")
+""")
+        gr.Markdown("Use only with faces and footage you have permission to edit. Do not use this to impersonate, deceive, harass, or create non-consensual intimate content.")
 
         with gr.Tabs():
-            with gr.Tab("🖼️ Image Swap"):
-                gr.Markdown("### Swap a face in a still image")
+            with gr.Tab("🖼️ Swap Image"):
+                gr.HTML('<div class="fd-card"><div class="fd-step">Image workflow</div>Upload a face photo and a target image. Then click Start.</div>')
                 with gr.Row():
-                    image_source = gr.File(label="1. Source face", file_types=["image"], type="filepath")
-                    image_target = gr.File(label="2. Target image", file_types=["image"], type="filepath")
+                    img_source = gr.File(label="1. Source face image", file_types=["image"], type="filepath")
+                    img_target = gr.File(label="2. Target image", file_types=["image"], type="filepath")
                 with gr.Row():
-                    image_preset = gr.Radio(
-                        choices=list(PRESETS.keys()),
-                        value="quality",
-                        label="3. Quality",
-                    )
-                    image_start = gr.Button("Start Image Swap", variant="primary", elem_classes=["big-button"])
-                image_output = gr.File(label="4. Download finished image")
-                image_status = gr.Textbox(label="Progress", lines=12, elem_classes=["status-box"])
+                    img_preset = gr.Radio(choices=[("Fast", "fast"), ("Quality", "quality"), ("Hollywood", "hollywood")], value="quality", label="3. Quality level")
+                    img_enhance = gr.Checkbox(value=True, label="Face enhancement")
+                gr.HTML(preset_cards())
+                with gr.Row(elem_classes=["fd-big"]):
+                    img_run = gr.Button("Start Image Swap", variant="primary")
+                img_output = gr.File(label="Download result")
+                img_log = gr.Textbox(label="Progress and result log", lines=10)
+                img_run.click(run_image, inputs=[img_source, img_target, img_preset, img_enhance], outputs=[img_output, img_log])
 
-            with gr.Tab("🎬 Video Swap"):
-                gr.Markdown("### Swap a face in a video")
+            with gr.Tab("🎬 Swap Video"):
+                gr.HTML('<div class="fd-card"><div class="fd-step">Video workflow</div>Start with a short 5–10 second 720p clip on your Dell G7.</div>')
                 with gr.Row():
-                    video_source = gr.File(label="1. Source face", file_types=["image"], type="filepath")
-                    video_target = gr.File(label="2. Target video", file_types=["video"], type="filepath")
+                    vid_source = gr.File(label="1. Source face image", file_types=["image"], type="filepath")
+                    vid_target = gr.File(label="2. Target video", file_types=["video"], type="filepath")
                 with gr.Row():
-                    video_preset = gr.Radio(
-                        choices=list(PRESETS.keys()),
-                        value="fast",
-                        label="3. Quality",
-                    )
-                    video_start = gr.Button("Start Video Swap", variant="primary", elem_classes=["big-button"])
-                video_output = gr.File(label="4. Download finished video")
-                video_status = gr.Textbox(label="Progress", lines=12, elem_classes=["status-box"])
+                    vid_preset = gr.Radio(choices=[("Fast", "fast"), ("Quality", "quality"), ("Hollywood", "hollywood")], value="fast", label="3. Quality level")
+                    vid_enhance = gr.Checkbox(value=True, label="Face enhancement")
+                gr.HTML(preset_cards())
+                with gr.Row(elem_classes=["fd-big"]):
+                    vid_run = gr.Button("Start Video Swap", variant="primary")
+                vid_output = gr.File(label="Download result")
+                vid_log = gr.Textbox(label="Progress and result log", lines=10)
+                vid_run.click(run_video, inputs=[vid_source, vid_target, vid_preset, vid_enhance], outputs=[vid_output, vid_log])
 
-            with gr.Tab("📁 Projects"):
-                gr.Markdown("### Recent jobs")
+            with gr.Tab("📁 My Projects"):
+                gr.Markdown("Outputs from previous runs appear here.")
                 refresh = gr.Button("Refresh Projects")
-                projects = gr.Dataframe(
-                    headers=["Created", "Type", "Preset", "Status", "Output"],
-                    value=_projects_table(),
-                    interactive=False,
-                )
+                projects = gr.Markdown(list_projects())
+                refresh.click(list_projects, outputs=projects)
 
             with gr.Tab("⚙️ Settings"):
-                gr.Markdown("### Simple settings")
-                gr.Radio(["Auto GPU", "CPU fallback"], value="Auto GPU", label="Processor")
-                gr.Checkbox(value=True, label="Preserve original audio for videos")
-                gr.Checkbox(value=True, label="Use face enhancement")
-                gr.Dropdown(["MP4", "PNG"], value="MP4", label="Preferred output format")
+                gr.Markdown("""
+### Simple settings
+
+The beginner app keeps the hard settings hidden. Use these defaults locally:
+
+- Images: `Quality`
+- Short test videos: `Fast`
+- Final local image renders: `Hollywood`
+- Final long video renders: RunPod later
+""")
                 check = gr.Button("Run System Check")
-                check_output = gr.Textbox(label="System status", lines=8)
+                repair = gr.Button("Repair Folders")
+                check_result = gr.Markdown(system_check())
+                repair_result = gr.Markdown("")
+                check.click(system_check, outputs=check_result)
+                repair.click(repair_folders, outputs=repair_result)
 
             with gr.Tab("📦 Models"):
-                gr.Markdown("### Models and cache")
-                gr.Markdown("Models are cached automatically. For local use and RunPod later, keep `/workspace` persistent.")
-                model_button = gr.Button("Check Model Storage")
-                model_output = gr.Textbox(label="Model status", lines=8)
+                gr.Markdown(f"""
+### Models and cache
 
-        image_start.click(run_image, inputs=[image_source, image_target, image_preset], outputs=[image_output, image_status, projects])
-        video_start.click(run_video, inputs=[video_source, video_target, video_preset], outputs=[video_output, video_status, projects])
-        refresh.click(refresh_projects, outputs=[projects])
-        check.click(system_check, outputs=[check_output])
-        model_button.click(model_status, outputs=[model_output])
+Models are stored here:
+
+`{MODEL_DIR}`
+
+The first run can take longer while model files initialize. Keep the `workspace` folder so files are reused.
+
+For now this page is intentionally button-free so you do not accidentally download huge models on your Dell G7. We can add one-click model downloads later for RunPod.
+""")
+
+        gr.HTML('<div class="fd-footer">Advanced engines still run in the background: FaceFusion on port 7860 and ComfyUI on port 8188.</div>')
     return demo
 
 
@@ -271,7 +284,7 @@ def main() -> None:
         server_name=args.host,
         server_port=args.port,
         show_api=False,
-        allowed_paths=[str(DATA_DIR)],
+        allowed_paths=[str(DATA_DIR), str(MODEL_DIR)],
     )
 
 

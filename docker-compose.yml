@@ -9,7 +9,7 @@ services:
     volumes:
       - ./workspace:/workspace
     environment:
-      APP_MODE: all
+      APP_MODE: backend
       APP_PORT: 3000
       FACEFUSION_PORT: 7860
       COMFYUI_PORT: 8188
