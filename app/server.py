@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shlex
 import shutil
 import subprocess
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import gradio as gr
@@ -20,8 +22,10 @@ SOURCE_DIR = DATA_DIR / "source_faces"
 TARGET_DIR = DATA_DIR / "targets"
 OUTPUT_DIR = DATA_DIR / "outputs"
 LOG_DIR = DATA_DIR / "logs"
+PROJECT_DIR = DATA_DIR / "projects"
+MODEL_DIR = Path(os.environ.get("MODEL_DIR", "/workspace/models"))
 
-for folder in (SOURCE_DIR, TARGET_DIR, OUTPUT_DIR, LOG_DIR):
+for folder in (SOURCE_DIR, TARGET_DIR, OUTPUT_DIR, LOG_DIR, PROJECT_DIR, MODEL_DIR):
     folder.mkdir(parents=True, exist_ok=True)
 
 CSS = """
@@ -36,12 +40,13 @@ CSS = """
 """
 
 
-def _safe_copy(upload_path: str, folder: Path, prefix: str) -> Path:
+def _safe_copy(upload_path: str, folder: Path, prefix: str, allowed: set[str] | None = None) -> Path:
     if not upload_path:
-        raise ValueError("Missing upload file.")
+        raise ValueError("Choose a file first.")
     src = Path(upload_path)
     suffix = src.suffix.lower()
-    if suffix not in ALLOWED_EXTENSIONS:
+    valid = allowed or ALLOWED_EXTENSIONS
+    if suffix not in valid:
         raise ValueError(f"Unsupported file type: {suffix}")
     dest = folder / f"{prefix}_{uuid.uuid4().hex[:10]}{suffix}"
     shutil.copy2(src, dest)
@@ -49,8 +54,7 @@ def _safe_copy(upload_path: str, folder: Path, prefix: str) -> Path:
 
 
 def _output_path(target: Path) -> Path:
-    suffix = target.suffix.lower()
-    if suffix in IMAGE_EXTENSIONS:
+    if target.suffix.lower() in IMAGE_EXTENSIONS:
         return OUTPUT_DIR / f"facedeploy_{uuid.uuid4().hex[:10]}.png"
     return OUTPUT_DIR / f"facedeploy_{uuid.uuid4().hex[:10]}.mp4"
 
@@ -67,8 +71,11 @@ def _target_kind(target: Path) -> str:
 def _run_facefusion(source: Path, target: Path, output: Path, preset_name: str) -> tuple[bool, str]:
     preset = PRESETS[preset_name]
     log_path = LOG_DIR / f"run_{output.stem}.log"
+    args = list(preset["args"])
+    if not enhance:
+        args = [item for item in args if item != "face_enhancer"]
 
-    base_cmd = [
+    cmd = [
         "python3",
         str(FACEFUSION_DIR / "facefusion.py"),
         "headless-run",
@@ -78,8 +85,7 @@ def _run_facefusion(source: Path, target: Path, output: Path, preset_name: str) 
         str(target),
         "--output-path",
         str(output),
-    ]
-    cmd = base_cmd + list(preset["args"])
+    ] + args
 
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
@@ -117,13 +123,13 @@ def _run_facefusion(source: Path, target: Path, output: Path, preset_name: str) 
     return ok, summary
 
 
-def run_swap(source_upload, target_upload, preset_name: str):
+def run_swap(source_upload, target_upload, preset_name: str, enhance: bool):
     if source_upload is None or target_upload is None:
         return None, None, "Upload both files, then press Start."
 
     try:
-        source = _safe_copy(source_upload, SOURCE_DIR, "source")
-        target = _safe_copy(target_upload, TARGET_DIR, "target")
+        source = _safe_copy(source_upload, SOURCE_DIR, "source", IMAGE_EXTENSIONS)
+        target = _safe_copy(target_upload, TARGET_DIR, "target", allowed_targets)
         output = _output_path(target)
         ok, summary = _run_facefusion(source, target, output, preset_name)
         if ok:
@@ -254,7 +260,7 @@ def main() -> None:
         server_name=args.host,
         server_port=args.port,
         show_api=False,
-        allowed_paths=[str(DATA_DIR)],
+        allowed_paths=[str(DATA_DIR), str(MODEL_DIR)],
     )
 
 

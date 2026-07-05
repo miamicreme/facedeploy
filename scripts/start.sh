@@ -4,10 +4,11 @@ set -euo pipefail
 export COMFYUI_DIR=${COMFYUI_DIR:-/workspace/ComfyUI}
 export FACEFUSION_DIR=${FACEFUSION_DIR:-/workspace/facefusion}
 export DATA_DIR=${DATA_DIR:-/workspace/data}
+export MODELS_DIR=${MODELS_DIR:-/workspace/models}
 export APP_PORT=${APP_PORT:-3000}
 export FACEFUSION_PORT=${FACEFUSION_PORT:-7860}
 export COMFYUI_PORT=${COMFYUI_PORT:-8188}
-export APP_MODE=${APP_MODE:-all}
+export APP_MODE=${APP_MODE:-backend}
 
 # Loopback-only ports for the real services. nginx is the only process
 # allowed to bind the public ports above, and it requires HTTP basic auth.
@@ -21,9 +22,8 @@ export INTERNAL_APP_PORT INTERNAL_FACEFUSION_PORT INTERNAL_COMFYUI_PORT
 
 mkdir -p "$DATA_DIR/source_faces" "$DATA_DIR/targets" "$DATA_DIR/workflows" "$DATA_DIR/outputs" "$DATA_DIR/logs"
 mkdir -p "$COMFYUI_DIR/input" "$COMFYUI_DIR/output" "$COMFYUI_DIR/models"
-mkdir -p /workspace/models/facefusion /workspace/models/cache /workspace/models/huggingface
+mkdir -p "$MODELS_DIR/facefusion" "$MODELS_DIR/cache" "$MODELS_DIR/huggingface"
 
-# Handy symlinks inside ComfyUI for RunPod file browser workflows.
 ln -sfn "$DATA_DIR/source_faces" "$COMFYUI_DIR/input/source_faces"
 ln -sfn "$DATA_DIR/targets" "$COMFYUI_DIR/input/targets"
 ln -sfn "$DATA_DIR/outputs" "$COMFYUI_DIR/output/facedeploy_outputs"
@@ -127,7 +127,7 @@ start_facefusion_ui() {
   watchdog facefusion run_facefusion_ui
 }
 
-start_facedeploy_app() {
+start_backend() {
   cd /opt/facedeploy/app
   echo "FaceDeploy upload app (internal) on 127.0.0.1:${INTERNAL_APP_PORT}"
   watchdog app python3 server.py --host 127.0.0.1 --port "$INTERNAL_APP_PORT"

@@ -1,7 +1,7 @@
 services:
   facedeploy:
     build: .
-    image: facedeploy:latest
+    image: facedeploy:local
     ports:
       - "3000:3000"
       - "7860:7860"
@@ -9,8 +9,9 @@ services:
     volumes:
       - ./workspace:/workspace
     environment:
-      APP_MODE: all
+      APP_MODE: backend
       APP_PORT: 3000
+      FACEFUSION_PORT: 7860
       COMFYUI_PORT: 8188
       # All ports are behind nginx basic auth; set your own credentials here
       # instead of relying on the randomly generated one printed to logs.
