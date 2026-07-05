@@ -44,13 +44,16 @@ Open the pod terminal and run:
 /doctor.sh
 ```
 
-Then open the HTTP link for port 8188.
+Then open the HTTP link for port 8188. It's behind HTTP basic auth --
+`/doctor.sh`'s log output won't show the password, so check the main
+container log (or your own `FACEDEPLOY_USER` / `FACEDEPLOY_PASSWORD`) for
+the credentials printed on first start.
 
 ## 4. Where to upload files
 
 ```text
 /workspace/data/source_faces
-/workspace/data/target_videos
+/workspace/data/targets
 ```
 
 Those folders are symlinked into ComfyUI input folders automatically.

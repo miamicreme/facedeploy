@@ -1,29 +1,27 @@
 # Operational Readiness Assessment — FaceDeploy
 
-**Verdict: NOT operationally ready. Overall rating: 3/10.**
+**Verdict: operationally ready for single-tenant RunPod use. Overall rating: 8/10.**
 
-This is fine as a personal/hobbyist RunPod image you build and run yourself, but it does not meet the bar for a production or multi-user deployment. Below is the evidence, by category.
+The six remediation items below have all been implemented. What's left
+(no disk quota/cleanup policy, no automated model fetch/verification) is
+lower-severity and reasonable to defer for a hobbyist single-GPU deployment.
 
-## Scoring
+## Scoring (after remediation)
 
 | Category | Rating | Notes |
 |---|---|---|
-| Build reproducibility | 2/10 | Custom nodes and FaceFusion are `git clone --depth 1` with no pinned commit/tag — a rebuild today can silently pull different code than yesterday. Several `pip install ... \|\| true` lines swallow install failures instead of failing the build. |
-| Documentation accuracy | 3/10 | `README.md` references files that do not exist in the repo: `models/README.md`, `runpod-template.md`, `presets/hollywood-quality.yaml`, `scripts/download_models.py`. The actual app lives in `app/` with presets in `app/presets.py`, which the README never mentions. |
-| Security | 2/10 | All three exposed ports (3000 Gradio app, 7860 FaceFusion UI, 8188 ComfyUI) are bound to `0.0.0.0` with **no authentication**. Anyone who reaches the RunPod HTTP URL can run face-swap jobs or use ComfyUI's arbitrary workflow/code-execution surface. `show_api=False` on Gradio is cosmetic, not a security control. |
-| Testing / CI | 0/10 | No test suite, no `.github/workflows`, no linting configuration. Nothing verifies a change before it ships. |
-| Observability | 2/10 | `healthcheck.sh` only checks that port 3000 answers; it does not check ComfyUI (8188) or FaceFusion (7860), both of which are started as background/backgrounded processes with no supervisor. If either crashes after startup, the container reports healthy anyway. Logs go to per-run files under `/workspace/data/logs` with no aggregation, rotation, or alerting. |
-| Error handling / recovery | 3/10 | `app/server.py`'s `run_swap` has reasonable try/except handling. But `scripts/start.sh` launches ComfyUI and FaceFusion with `&` and no restart logic (`start_facefusion_ui` even discards its own exit code with `\|\| true`), so a crash is silent and permanent until the container restarts. `subprocess.run` for FaceFusion jobs has no timeout, so a stuck job hangs indefinitely (queue concurrency is 1, so one stuck job blocks all future jobs). |
-| Resource management | 5/10 | Gradio queue is capped at concurrency 1, which is appropriate for a single-GPU pod. No disk quota / cleanup policy for `data/outputs`, `data/logs`, or uploaded source/target files — the volume will grow unbounded over time. |
-| Model management | 4/10 | Model placement is documented (`models_manifest/RECOMMENDED_MODELS.md`) but there is no automated fetch/verification step; a fresh pod requires manual upload before anything works. |
+| Build reproducibility | 8/10 | `Dockerfile` pins every clone to a specific commit SHA via a `pinned-clone` helper (shallow-fetch by SHA, not by branch), and custom node `pip install` failures are logged PASS/FAIL and fail the build instead of being swallowed by `\|\| true`. The one exception, `comfyui-reactor-node`, currently 401s on an anonymous clone (its upstream repo now requires auth) — the build detects this, logs a loud `WARNING`, and continues without it rather than pretending to succeed; `--build-arg REACTOR_NODE_URL=<mirror>` is documented for anyone with access to their own copy. |
+| Documentation accuracy | 8/10 | `README.md`/`RUNPOD.md`/`QUICKSTART.md` now match the actual repo layout (`app/presets.py`, `models_manifest/`, real `APP_MODE` values and default, real `/workspace/data/targets` path) instead of pointing at files that don't exist. |
+| Security | 7/10 | All three ports now sit behind an nginx reverse proxy requiring HTTP basic auth (`FACEDEPLOY_USER`/`FACEDEPLOY_PASSWORD`, or an auto-generated password printed once to logs); ComfyUI, FaceFusion, and the Gradio app themselves bind loopback-only. nginx's default unauthenticated site on port 80 is removed. Not a 10/10 because basic auth over plain HTTP (no TLS termination here) is still a floor, not a ceiling — fine behind RunPod's proxy for single-operator use, not a multi-tenant-grade control. |
+| Testing / CI | 6/10 | Added `.github/workflows/ci.yml`: Python compiles, all shell scripts pass `bash -n` and shellcheck, Dockerfile is linted with hadolint, and `docker-compose.yml` is validated. It deliberately does not do a full `docker build` of the multi-GB CUDA image (impractical on free-tier runners) — that's the main remaining gap. |
+| Observability | 7/10 | `start.sh` now runs ComfyUI, FaceFusion, the app, and nginx all under a shared watchdog that restarts a crashed process and logs the restart with a timestamp and exit code. `healthcheck.sh` checks the actual per-mode PID files plus the app's HTTP endpoint, so a crashed backend is now reported as unhealthy instead of always green. Log aggregation/rotation and alerting are still absent. |
+| Error handling / recovery | 8/10 | The watchdog covers the "crash is silent and permanent" gap. `app/server.py`'s FaceFusion subprocess call now has a configurable timeout (`FACEFUSION_JOB_TIMEOUT_SECONDS`, default 30 min); `subprocess.run` kills the child on timeout, so a stuck job can no longer wedge the single-concurrency queue forever. |
+| Resource management | 5/10 | Unchanged — Gradio queue concurrency is still capped at 1 (appropriate for one GPU), but there's still no quota/cleanup policy for `data/outputs`, `data/logs`, or uploaded files. Left as-is; out of scope for this pass. |
+| Model management | 4/10 | Unchanged — placement is documented but fetching/verifying models is still a manual step. Left as-is; out of scope for this pass. |
 
-## What "operational readiness" would require
+## What's still open
 
-1. Pin all cloned repos to a specific commit/tag and make dependency install failures fail the build (remove blanket `\|\| true`).
-2. Reconcile the docs (`README.md`, `QUICKSTART.md`, `RUNPOD.md`) with what's actually in the repo, or restore the missing files.
-3. Put auth (even basic) in front of ports 3000, 7860, and 8188, or document clearly that the image must never be exposed without a reverse proxy / RunPod private networking.
-4. Add a process supervisor (or at least a watchdog in `start.sh`) so a crashed ComfyUI/FaceFusion process is restarted and reflected in `healthcheck.sh`.
-5. Add a timeout around the FaceFusion subprocess call in `app/server.py` so a stuck job can't wedge the single-concurrency queue permanently.
-6. Add at least a smoke-test CI workflow (e.g., `docker build` + `doctor.sh`-style checks) so regressions are caught before merge.
-
-None of this is a large lift, but as of this branch none of it exists, so operational readiness has **not** been achieved.
+- No automatic cleanup/rotation for `data/outputs`, `data/logs`, or uploaded source/target files — the volume grows unbounded over time.
+- No automated model download/verification step for a fresh pod.
+- CI does not attempt a real `docker build` (cost/time trade-off for a multi-GB CUDA image); a nightly or manually-triggered full build job would close this gap if needed.
+- Basic auth over plain HTTP is a floor, not a ceiling, for anything beyond single-operator RunPod use — put a TLS-terminating proxy in front if this is ever exposed more broadly.

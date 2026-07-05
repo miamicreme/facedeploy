@@ -144,19 +144,21 @@ Useful folders:
 /workspace/ComfyUI/models/facerestore_models
 ```
 
-See [`models/README.md`](models/README.md) for the full layout.
+See [`models_manifest/RECOMMENDED_MODELS.md`](models_manifest/RECOMMENDED_MODELS.md) for the full layout.
 
 ---
 
 ## Quality preset
 
-The recommended quality defaults are in:
+The beginner upload app (port 3000) ships three presets, defined in [`app/presets.py`](app/presets.py):
 
-```text
-presets/hollywood-quality.yaml
-```
+| Preset | Use for | Notes |
+|---|---|---|
+| `fast` | Quick tests | Swap only, `inswapper_128_fp16`, no enhancer |
+| `quality` | Default | Swap + light `gfpgan_1.4` enhancement (75% blend) |
+| `hollywood` | Final renders | Swap + `codeformer` enhancement (65% blend), strict memory strategy |
 
-Starting point:
+If you're building a manual ComfyUI workflow instead of using the upload app, a reasonable starting point:
 
 - Detector: RetinaFace/InsightFace where available
 - Swap: ReActor / InsightFace-based swap
@@ -197,16 +199,14 @@ Do short test clips first. Once the settings look right, process the full video.
 
 ## Container modes
 
-Default mode launches ComfyUI:
+Default mode (`APP_MODE=all`, or unset) launches the upload app, FaceFusion, and ComfyUI together:
 
 ```bash
-APP_MODE=comfyui
-```
-
-You can also open a shell for debugging:
-
-```bash
-APP_MODE=shell
+APP_MODE=all       # default: app + facefusion + comfyui
+APP_MODE=app       # only the upload app (port 3000)
+APP_MODE=comfyui   # only ComfyUI (port 8188)
+APP_MODE=facefusion # only FaceFusion (port 7860)
+APP_MODE=shell     # open a shell for debugging, no services start
 ```
 
 Example:
@@ -217,17 +217,36 @@ docker run --rm -it -e APP_MODE=shell YOUR_DOCKERHUB_NAME/facedeploy:latest
 
 ---
 
+## Authentication
+
+All three ports (3000, 7860, 8188) sit behind an nginx reverse proxy that
+requires HTTP basic auth — none of the upload app, FaceFusion, or ComfyUI
+have their own login. On first start, if `FACEDEPLOY_PASSWORD` isn't set,
+a random password is generated and printed once to the container logs.
+Set `FACEDEPLOY_USER` / `FACEDEPLOY_PASSWORD` yourself to pick your own
+credentials instead of relying on the generated one.
+
+---
+
 ## Troubleshooting
 
 ### The pod opens but custom nodes are missing
 
 Open the container logs. Most failures are dependency conflicts from custom nodes. This image installs node dependencies during build, but custom node projects change often.
 
-Inside the pod terminal:
+The `comfyui-reactor-node` clone in particular is best-effort: its upstream
+repo currently requires authentication to clone anonymously, so the build
+logs a `WARNING` and skips it rather than failing the whole image. If you
+need ReActor-based ComfyUI workflows, rebuild with
+`--build-arg REACTOR_NODE_URL=<your mirror>` pointing at a copy you have
+access to. This does not affect the upload app or FaceFusion, which use
+neither ComfyUI nor this node.
+
+Inside the pod terminal (port 8188 is already bound by the nginx auth proxy, so restart ComfyUI on its internal port instead):
 
 ```bash
 cd /workspace/ComfyUI
-python3 main.py --listen 0.0.0.0 --port 8188
+python3 main.py --listen 127.0.0.1 --port ${INTERNAL_COMFYUI_PORT:-18188}
 ```
 
 ### Out of memory
@@ -245,10 +264,16 @@ Some nodes download small helper files on first use. Persistent RunPod storage p
 ```text
 Dockerfile
 README.md
+QUICKSTART.md
+RUNPOD.md
+OPERATIONAL_READINESS.md
 docker-compose.yml
+app/server.py               # Gradio upload app (port 3000)
+app/presets.py               # fast / quality / hollywood presets
+app/requirements.txt
 scripts/start.sh
-scripts/download_models.py
-presets/hollywood-quality.yaml
-models/README.md
-runpod-template.md
+scripts/doctor.sh
+scripts/healthcheck.sh
+models_manifest/RECOMMENDED_MODELS.md
+workflows/README.md
 ```

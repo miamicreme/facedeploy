@@ -31,9 +31,15 @@ docker push YOUR_DOCKERHUB_NAME/facedeploy:latest
 YOUR_DOCKERHUB_NAME/facedeploy:latest
 ```
 
+## Login
+
+All three ports require HTTP basic auth. Check the container logs on first
+start for a generated password (or set `FACEDEPLOY_USER` /
+`FACEDEPLOY_PASSWORD` yourself before starting the pod).
+
 ## Beginner workflow
 
-1. Open port 3000.
+1. Open port 3000 and log in.
 2. Upload the source face image.
 3. Upload the target image or video.
 4. Pick `quality` first.
