@@ -15,6 +15,7 @@ from presets import ALLOWED_EXTENSIONS, IMAGE_EXTENSIONS, PRESETS, VIDEO_EXTENSI
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/workspace/data"))
 FACEFUSION_DIR = Path(os.environ.get("FACEFUSION_DIR", "/workspace/facefusion"))
+JOB_TIMEOUT_SECONDS = int(os.environ.get("FACEFUSION_JOB_TIMEOUT_SECONDS", "1800"))
 SOURCE_DIR = DATA_DIR / "source_faces"
 TARGET_DIR = DATA_DIR / "targets"
 OUTPUT_DIR = DATA_DIR / "outputs"
@@ -84,23 +85,34 @@ def _run_facefusion(source: Path, target: Path, output: Path, preset_name: str) 
     env.setdefault("PYTHONUNBUFFERED", "1")
 
     started = time.time()
+    timed_out = False
     with log_path.open("w", encoding="utf-8") as log:
         log.write("Command:\n")
         log.write(" ".join(shlex.quote(part) for part in cmd) + "\n\n")
         log.flush()
-        process = subprocess.run(
-            cmd,
-            cwd=str(FACEFUSION_DIR),
-            env=env,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
+        try:
+            process = subprocess.run(
+                cmd,
+                cwd=str(FACEFUSION_DIR),
+                env=env,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=JOB_TIMEOUT_SECONDS,
+            )
+            returncode = process.returncode
+        except subprocess.TimeoutExpired:
+            # subprocess.run kills the child (and its output pipes) before
+            # re-raising, so the process is guaranteed gone at this point --
+            # a stuck job can no longer wedge the single-concurrency queue.
+            timed_out = True
+            returncode = -1
+            log.write(f"\n\nTIMED OUT after {JOB_TIMEOUT_SECONDS}s, process killed.\n")
 
     elapsed = time.time() - started
     log_text = log_path.read_text(encoding="utf-8", errors="replace")[-7000:]
-    ok = process.returncode == 0 and output.exists() and output.stat().st_size > 0
-    status = "✅ Finished" if ok else "❌ Failed"
+    ok = not timed_out and returncode == 0 and output.exists() and output.stat().st_size > 0
+    status = "⏱️ Timed out" if timed_out else ("✅ Finished" if ok else "❌ Failed")
     summary = f"{status} in {elapsed:.1f}s\n\nOutput: {output if ok else 'none'}\nLog: {log_path}\n\n{log_text}"
     return ok, summary
 

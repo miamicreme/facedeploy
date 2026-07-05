@@ -12,6 +12,10 @@ services:
       APP_MODE: all
       APP_PORT: 3000
       COMFYUI_PORT: 8188
+      # All ports are behind nginx basic auth; set your own credentials here
+      # instead of relying on the randomly generated one printed to logs.
+      FACEDEPLOY_USER: facedeploy
+      FACEDEPLOY_PASSWORD: change-me
     deploy:
       resources:
         reservations:
