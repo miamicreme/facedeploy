@@ -3,10 +3,15 @@ services:
     build: .
     image: facedeploy:latest
     ports:
+      - "3000:3000"
+      - "7860:7860"
       - "8188:8188"
     volumes:
-      - ./models:/workspace/ComfyUI/models
-      - ./data:/workspace/data
+      - ./workspace:/workspace
+    environment:
+      APP_MODE: all
+      APP_PORT: 3000
+      COMFYUI_PORT: 8188
     deploy:
       resources:
         reservations:
