@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shlex
 import shutil
@@ -43,12 +44,13 @@ APP_CSS = """
 """
 
 
-def _safe_copy(upload_path: str, folder: Path, prefix: str) -> Path:
+def _safe_copy(upload_path: str, folder: Path, prefix: str, allowed: set[str] | None = None) -> Path:
     if not upload_path:
-        raise ValueError("Missing upload file.")
+        raise ValueError("Choose a file first.")
     src = Path(upload_path)
     suffix = src.suffix.lower()
-    if suffix not in ALLOWED_EXTENSIONS:
+    valid = allowed or ALLOWED_EXTENSIONS
+    if suffix not in valid:
         raise ValueError(f"Unsupported file type: {suffix}")
     dest = folder / f"{prefix}_{uuid.uuid4().hex[:10]}{suffix}"
     shutil.copy2(src, dest)
@@ -120,8 +122,8 @@ def run_swap(source_upload, target_upload, preset_name: str, enhance: bool):
     if source_upload is None or target_upload is None:
         return None, "Upload both a source face image and a target image/video."
     try:
-        source = _safe_copy(source_upload, SOURCE_DIR, "source")
-        target = _safe_copy(target_upload, TARGET_DIR, "target")
+        source = _safe_copy(source_upload, SOURCE_DIR, "source", IMAGE_EXTENSIONS)
+        target = _safe_copy(target_upload, TARGET_DIR, "target", allowed_targets)
         output = _output_path(target)
         ok, summary = _run_facefusion(source, target, output, preset_name, enhance)
         return (str(output) if ok else None), summary
