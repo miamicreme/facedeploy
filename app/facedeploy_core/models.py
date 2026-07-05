@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
+
+
+def utc_now_iso() -> str:
+    return datetime.now(UTC).isoformat()
 
 
 class JobKind(str, Enum):
@@ -38,12 +42,12 @@ class JobRecord(BaseModel):
     log_path: str | None = None
     error: str | None = None
     progress: int = 0
-    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
-    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    created_at: str = Field(default_factory=utc_now_iso)
+    updated_at: str = Field(default_factory=utc_now_iso)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     def touch(self) -> None:
-        self.updated_at = datetime.utcnow().isoformat()
+        self.updated_at = utc_now_iso()
 
     @property
     def output_exists(self) -> bool:
