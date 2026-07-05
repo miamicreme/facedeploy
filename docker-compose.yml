@@ -1,16 +1,12 @@
 services:
-  comfyui:
+  facedeploy:
     build: .
     image: facedeploy:latest
     ports:
       - "8188:8188"
     volumes:
       - ./models:/workspace/ComfyUI/models
-      - ./input:/workspace/ComfyUI/input
-      - ./output:/workspace/ComfyUI/output
-      - ./workflows:/workspace/ComfyUI/user/default/workflows
-    environment:
-      AUTO_DOWNLOAD_MODELS: "false"
+      - ./data:/workspace/data
     deploy:
       resources:
         reservations:
