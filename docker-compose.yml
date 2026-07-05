@@ -13,9 +13,10 @@ services:
       APP_PORT: 3000
       FACEFUSION_PORT: 7860
       COMFYUI_PORT: 8188
-      NVIDIA_VISIBLE_DEVICES: all
-      NVIDIA_DRIVER_CAPABILITIES: compute,utility
-    restart: unless-stopped
+      # All ports are behind nginx basic auth; set your own credentials here
+      # instead of relying on the randomly generated one printed to logs.
+      FACEDEPLOY_USER: facedeploy
+      FACEDEPLOY_PASSWORD: change-me
     deploy:
       resources:
         reservations:
