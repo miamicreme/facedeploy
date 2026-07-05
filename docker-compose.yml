@@ -1,7 +1,7 @@
 services:
   facedeploy:
     build: .
-    image: facedeploy:latest
+    image: facedeploy:local
     ports:
       - "3000:3000"
       - "7860:7860"
@@ -11,7 +11,11 @@ services:
     environment:
       APP_MODE: all
       APP_PORT: 3000
+      FACEFUSION_PORT: 7860
       COMFYUI_PORT: 8188
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    restart: unless-stopped
     deploy:
       resources:
         reservations:
